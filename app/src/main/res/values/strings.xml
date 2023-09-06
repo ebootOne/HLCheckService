@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HLCheckService</string>
+    <string name="description">无障碍权限来实现自动发送</string>
+</resources>
