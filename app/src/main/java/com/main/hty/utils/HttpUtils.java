@@ -50,8 +50,8 @@ public class HttpUtils {
             URL url = new URL(stringBuilder.toString());
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(20000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
             conn.connect();
             if (conn.getResponseCode() == 200) { // 如果状态码==200,说明请求成功
                 StringBuilder sb = new StringBuilder();

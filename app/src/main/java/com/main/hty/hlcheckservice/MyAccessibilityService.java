@@ -12,12 +12,15 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.PowerManager;
 import android.util.Log;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import com.main.hty.MyThreadFactory;
 import com.main.hty.utils.HttpUtils;
+import com.xbase.tool.DeviceUtils;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -28,7 +31,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -44,33 +50,56 @@ import java.util.concurrent.TimeUnit;
 
 
 /*资源id
-* 141,1271 939,1395  编辑框
-* 945，1265 1080，1400
-*
-* */
+ * 141,1271 939,1395  编辑框
+ * 945，1265 1080，1400
+ *
+ * */
 public class MyAccessibilityService extends AccessibilityService{
     private static final String TAG = "AccessibilityService";
     private final String PACKAGENAME = "com.example.yu";
 
     private volatile boolean isStopClick = false;
     private ThreadPoolExecutor clickThreadPool;
+    PowerManager.WakeLock mWakeLock;
+    Context context;
 
     List<List<String>> clickPointMessages = new ArrayList<>();
     Runnable runnable = new Runnable() {
+        /**
+         * @channel 渠道
+         * @app_version 应用版本号
+         * @device_id 设备id
+         * @number 设备型号
+         * @os 系统版本号
+         * */
         @Override
         public void run() {
-
-            String result = HttpUtils.requestByGet("get_xiazhu.html?",System.currentTimeMillis()/1000,null);
+            if(!serviceOn){
+                if(mapIds != null){
+                    mapIds.clear();
+                }
+                return;
+            }
+            if(isUpdateIng ){//正在更新中 是否关闭服务
+                return;
+            }
+            Map<String,String> map = new HashMap<>();
+            map.put("factory", DeviceUtils.getDeviceBrand());
+            map.put("device_id", DeviceUtils.getUniqueDeviceId(context));
+            map.put("number", DeviceUtils.getModel());
+            map.put("version", DeviceUtils.getSDKVersionCode() + "");
+            map.put("remark",remark);
+            String result = HttpUtils.requestByGet("get_xiazhu.html?",System.currentTimeMillis()/1000,map);
             Log.i(TAG,"onAccessibilityEvent---:runnable"+result);
             if(result != null) {
-                ids.setLength(0);
                 sendMsgBroadcast(result);
+
             }
         }
     };
 
-    StringBuilder ids = new StringBuilder();
-    public void sendMsgBroadcast(String result){
+    ConcurrentHashMap <String,String> mapIds = new ConcurrentHashMap <>();
+    public synchronized void sendMsgBroadcast(String result){
         Intent intent = new Intent(MyAccessibilityService.ACTION_AIUI_UPDATE);
         try {
             JSONObject resultJson = new JSONObject(result);
@@ -84,13 +113,14 @@ public class MyAccessibilityService extends AccessibilityService{
                 String id = jsonObject.getString("id");
                 intent.putExtra("input",msg);
                 intent.putExtra("id",id);
-                Log.i(TAG,"onAccessibilityEvent---:runnable："+i+"---:"+(length-1)+"--："+ids.toString());
                 if(i == length-1) {
                     intent.putExtra("isSendComplete", true);//是否发送完成
                 }
                 if(msg != null && msg.length() > 0) {
                     sendBroadcast(intent);
                 }
+                Log.i(TAG,"onAccessibilityEvent---:runnable："+id+"---:"+"--："+msg);
+
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -98,12 +128,14 @@ public class MyAccessibilityService extends AccessibilityService{
 
 
     }
+    @SuppressLint("InvalidWakeLockTag")
     @Override
     public void onCreate() {
         super.onCreate();
+        context = this;
         regReceiver();
         // 1. 创建 定时线程池对象 & 设置线程池线程数量固定为5
-        ScheduledExecutorService scheduledThreadPool = Executors.newScheduledThreadPool(5);// 2. 创建好Runnable类线程对象 & 需执行的任务
+        ScheduledExecutorService scheduledThreadPool = Executors.newScheduledThreadPool(10);// 2. 创建好Runnable类线程对象 & 需执行的任务
         // 3. 向线程池提交任务：schedule（）
         //scheduledThreadPool.schedule(runnable, 0, TimeUnit.SECONDS); // 延迟1s后执行任务
         scheduledThreadPool.scheduleAtFixedRate(runnable,10,10000,TimeUnit.MILLISECONDS);// 延迟10ms后、每隔5000ms执行任务
@@ -130,7 +162,6 @@ public class MyAccessibilityService extends AccessibilityService{
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
-
         setAccessibilityNodeInfos();
 
     }
@@ -138,46 +169,78 @@ public class MyAccessibilityService extends AccessibilityService{
     AIUIBroadcast broadcast;
     public void regReceiver(){
         //注册广播实例
-        IntentFilter intentFilter=new IntentFilter();
+        IntentFilter intentFilter=new IntentFilter(INTENT_FILTER);
         intentFilter.addAction(ACTION_AIUI_UPDATE);
+        intentFilter.addAction(OFF_OR_ON);
         broadcast=new AIUIBroadcast();
         registerReceiver(broadcast,intentFilter);
     }
 
-    String ipunt;
+    String input;
+    public static final String INTENT_FILTER="accessibility";
     public static final String ACTION_AIUI_UPDATE="input_";
+    public static final String OFF_OR_ON="off_or_on";//关闭开光
+    public boolean serviceOn = true;
+    boolean isUpdateIng;//是否更新中
+    String remark;
     public class AIUIBroadcast extends BroadcastReceiver {
-
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
+            if(action == OFF_OR_ON){
+                remark = intent.getStringExtra(MainActivity.REMARK_EDIT);
+                Log.i("","onAccessibilityEvent---BroadcastReceiver:"+remark );
+                serviceOn = intent.getBooleanExtra("off",false);
+            }
             if (action == ACTION_AIUI_UPDATE) {
                 //更新UI的操作
-                ipunt = intent.getStringExtra("input");
+                input = intent.getStringExtra("input");
                 String id = intent.getStringExtra("id");
-                Log.i(TAG,"onAccessibilityEvent---:AIUIBroadcast"+rootNode.getPackageName());
-                fillEditText(ipunt);
-                clickViewByContentDescription("Send",id);
+                Log.i("","onAccessibilityEvent---onReceive"+id+"--:"+input);
+                if(mapIds != null && mapIds.get(id) == null){//如果id已经发送过也要取消
+                    Log.i("","onAccessibilityEvent---mapIds"+id);
+                    fillEditText(input);
+                    clickViewByContentDescription("Send",id);
+                    try {
+                        Thread.currentThread().sleep(200);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+
                 boolean isSend = intent.getBooleanExtra("isSendComplete", false);//发送了一组之后
-                if(isSend){
+                if(isSend && mapIds != null && mapIds.size() > 0){
                     clickThreadPool.execute(new Runnable() {
                         @Override
                         public void run() {
+                            StringBuilder ids = new StringBuilder();
+                            for(Map.Entry<String,String>  entry : mapIds.entrySet()) {
+                                ids.append(entry.getValue()).append(",");
+                            }
                             if(ids != null){
                                 HashMap<String,String> map = new HashMap<>();
                                 map.put("ids",ids.toString());
+                                map.put("factory", DeviceUtils.getDeviceBrand());
+                                map.put("device_id", DeviceUtils.getUniqueDeviceId(context));
+                                map.put("number", DeviceUtils.getModel());
+                                map.put("version", DeviceUtils.getSDKVersionCode() + "");
+                                map.put("remark",remark);
+                                isUpdateIng = true;
                                 String result = HttpUtils.requestByGet("update_xiazhu.html?",System.currentTimeMillis()/1000,map);
-                                Log.i(TAG,"onAccessibilityEvent---:runnable："+ids.toString()+"---:"+result+"--ids:"+ids.toString());
+                                Log.i("","onAccessibilityEvent---:runnable update"+result);
                                 if(result != null){
+                                    isUpdateIng = false;
                                     try {
                                         JSONObject resultJson = new JSONObject(result);
                                         String code = resultJson.getString("code");
                                         if(code.equals("200")){
-                                            ids.setLength(0);
+                                            mapIds.clear();
                                         }
                                     } catch (JSONException e) {
                                         throw new RuntimeException(e);
                                     }
+                                }else {
+                                    isUpdateIng = false;
                                 }
                             }
 
@@ -193,20 +256,21 @@ public class MyAccessibilityService extends AccessibilityService{
     public void onAccessibilityEvent(AccessibilityEvent event) {
         String s = event.toString();
         if (/*event != null && event.getPackageName() != null && event.getPackageName().equals("org.telegram.messenger.web") && */event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            Log.i(TAG,"onAccessibilityEvent---:"+ipunt+"--:"+s);
             rootNode = getRootInActiveWindow();
             //fillEditText(ipunt);
         }
 
     }
-    private void fillEditText(String input) {
-
-        if (rootNode == null || input == null) return;
-
+    private synchronized void fillEditText(String input) {
+        Log.i(TAG,"onAccessibilityEvent---:onReceive：1"+input);
+        //if (rootNode == null || input == null) return;
+        Log.i(TAG,"onAccessibilityEvent---:onReceive：2"+input);
         // 这里我们查找 EditText 控件。通常 EditText 控件的类名是 "android.widget.EditText"。
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         List<AccessibilityNodeInfo> editTextList = findNodesByClassName(rootNode,"android.widget.EditText");
 
         for (AccessibilityNodeInfo editText : editTextList) {
+            Log.i(TAG,"onAccessibilityEvent---:onReceive：3"+input);
             // 输入自定义文字
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, input);
@@ -214,7 +278,7 @@ public class MyAccessibilityService extends AccessibilityService{
         }
     }
 
-    private List<AccessibilityNodeInfo> findNodesByClassName(AccessibilityNodeInfo rootNode, String className) {
+    private synchronized List<AccessibilityNodeInfo> findNodesByClassName(AccessibilityNodeInfo rootNode, String className) {
         List<AccessibilityNodeInfo> matchingNodes = new ArrayList<>();
 
         recursiveSearchByClassName(rootNode, className, matchingNodes);
@@ -222,7 +286,7 @@ public class MyAccessibilityService extends AccessibilityService{
         return matchingNodes;
     }
 
-    private void recursiveSearchByClassName(AccessibilityNodeInfo node, String className, List<AccessibilityNodeInfo> resultList) {
+    private synchronized void recursiveSearchByClassName(AccessibilityNodeInfo node, String className, List<AccessibilityNodeInfo> resultList) {
         if (node == null) {
             return;
         }
@@ -237,25 +301,25 @@ public class MyAccessibilityService extends AccessibilityService{
     }
 
 
-    private void clickViewByContentDescription(String description,String id) {
+    private synchronized void clickViewByContentDescription(String description,String id) {
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
-        if (rootNode == null) return;
+        /*if (rootNode == null || id.equals("1") || id.equals("2")) {
+            return;
+        }*/
 
         List<AccessibilityNodeInfo> matchingNodes = findNodesByContentDescription(rootNode, description);
         for (AccessibilityNodeInfo node : matchingNodes) {
             boolean isSend = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            Log.i(TAG,"onAccessibilityEvent---:onReceive：4"+id+"-input:"+input);
             if(isSend){//发送成功了添加进去
-                ids.append(id).append(",");
+                mapIds.put(id,id);
             }
-            Log.i("","clickViewByContentDescription---"+isSend);
         }
     }
 
     private List<AccessibilityNodeInfo> findNodesByContentDescription(AccessibilityNodeInfo rootNode, String description) {
         List<AccessibilityNodeInfo> matchingNodes = new ArrayList<>();
-
         recursiveSearchByContentDescription(rootNode, description, matchingNodes);
-
         return matchingNodes;
     }
 
